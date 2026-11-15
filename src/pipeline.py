@@ -1,4 +1,11 @@
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import KFold, cross_validate
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import cross_val_predict
 import pandas as pd
+import time
 
 df = pd.read_csv("data/train.csv")
 X = df.drop(columns=["id", "loss"])
@@ -39,6 +46,21 @@ preprocessor = ColumnTransformer(
 X_train_encoded = preprocessor.fit_transform(X_train)
 print("Encoded shape:", X_train_encoded.shape)
 
+print("\n--- Hyperparameter search: Ridge alpha ---")
+ridge_pipe = Pipeline([("prep", preprocessor), ("model", Ridge(random_state=RANDOM_SEED))])
+ridge_param_grid = {"model__alpha": [0.01, 0.1, 1.0, 10.0, 50.0, 100.0, 500.0]}
+
+ridge_search = GridSearchCV(
+    ridge_pipe, ridge_param_grid,
+    scoring="neg_root_mean_squared_error",
+    cv=KFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED),
+    n_jobs=-1,
+)
+ridge_search.fit(X_train, y_train)
+
+print(f"Best alpha: {ridge_search.best_params_['model__alpha']}")
+print(f"Best CV RMSE: {-ridge_search.best_score_:.2f}")
+
 #Step 4
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -67,3 +89,80 @@ evaluate(
     "Proposed: Gradient Boosting (XGBoost)",
     xgb.XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42, n_jobs=-1)
 )
+
+def cv_evaluate(name, model, n_splits=5):
+    pipe = Pipeline([("prep", preprocessor), ("model", model)])
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_SEED)
+    scores = cross_validate(
+        pipe, X_train, y_train, cv=kf,
+        scoring=("neg_root_mean_squared_error", "neg_mean_absolute_error"),
+        n_jobs=-1,
+    )
+    rmse_scores = -scores["test_neg_root_mean_squared_error"]
+    mae_scores = -scores["test_neg_mean_absolute_error"]
+    print(f"{name:35s} RMSE: {rmse_scores.mean():8.2f} ± {rmse_scores.std():6.2f}   "
+          f"MAE: {mae_scores.mean():8.2f} ± {mae_scores.std():6.2f}")
+    return rmse_scores, mae_scores
+
+print("\n--- Cross-validated (5-fold) results on training data ---")
+cv_evaluate("Trivial reference (mean predictor)", DummyRegressor(strategy="mean"))
+cv_evaluate("Baseline: Ridge regression", Ridge(alpha=1.0, random_state=RANDOM_SEED))
+cv_evaluate("Proposed: Gradient Boosting (XGBoost)",
+    xgb.XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=RANDOM_SEED, n_jobs=-1))
+
+ 
+
+#step 9
+print("\n--- Hyperparameter search: XGBoost ---")
+xgb_pipe = Pipeline([("prep", preprocessor), ("model", xgb.XGBRegressor(random_state=RANDOM_SEED, n_jobs=-1))])
+
+xgb_param_dist = {
+    "model__max_depth": [3, 4, 5, 6, 8],
+    "model__learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
+    "model__n_estimators": [100, 200, 300, 500],
+    "model__subsample": [0.6, 0.8, 1.0],
+}
+
+xgb_search = RandomizedSearchCV(
+    xgb_pipe, xgb_param_dist,
+    n_iter=20,
+    scoring="neg_root_mean_squared_error",
+    cv=KFold(n_splits=3, shuffle=True, random_state=RANDOM_SEED),
+    random_state=RANDOM_SEED,
+    n_jobs=-1,
+)
+start = time.time()
+xgb_search.fit(X_train, y_train)
+elapsed = time.time() - start
+print(f"Search runtime: {elapsed/60:.1f} minutes")
+
+print(f"Best params: {xgb_search.best_params_}")
+print(f"Best CV RMSE (3-fold search): {-xgb_search.best_score_:.2f}")
+
+#step 10
+print("\n--- Confirming tuned XGBoost with 5-fold CV ---")
+tuned_xgb = xgb.XGBRegressor(
+    **{k.replace("model__", ""): v for k, v in xgb_search.best_params_.items()},
+    random_state=RANDOM_SEED, n_jobs=-1,
+)
+cv_evaluate("Tuned XGBoost", tuned_xgb)
+
+#step 11
+def segment_evaluate(name, model, n_splits=5):
+    pipe = Pipeline([("prep", preprocessor), ("model", model)])
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_SEED)
+    preds = cross_val_predict(pipe, X_train, y_train, cv=kf, n_jobs=-1)
+
+    q1, q2 = y_train.quantile(0.33), y_train.quantile(0.66)
+    buckets = pd.cut(y_train, bins=[-np.inf, q1, q2, np.inf], labels=["low", "medium", "high"])
+
+    print(f"\n{name} — per-segment results (tertiles of claim severity):")
+    for b in ["low", "medium", "high"]:
+        mask = buckets == b
+        rmse = np.sqrt(mean_squared_error(y_train[mask], preds[mask]))
+        mae = mean_absolute_error(y_train[mask], preds[mask])
+        print(f"  {b:8s} (n={mask.sum():6d})  RMSE: {rmse:10.2f}   MAE: {mae:10.2f}")
+
+print("\n--- Per-segment (claim-size bucket) results ---")
+segment_evaluate("Baseline: Ridge regression", Ridge(alpha=1.0, random_state=RANDOM_SEED))
+segment_evaluate("Tuned XGBoost", tuned_xgb)
