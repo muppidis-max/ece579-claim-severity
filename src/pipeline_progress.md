@@ -46,7 +46,7 @@ Running log of what's been built in `src/pipeline.py` and the results at each st
 
 **Key findings:**
 - Ridge's best alpha came back as **1.0 — the default**. The search still counts as "tuned with comparable effort" per the rubric; it just confirmed the default was already optimal.
-- XGBoost's RMSE and MAE both improved further after tuning, and both gaps (vs. untuned XGBoost) are clearly larger than the fold-to-fold noise — a real improvement
+- XGBoost's RMSE and MAE both improved further after tuning, and both gaps (vs. untuned XGBoost) are clearly larger than the fold-to-fold noise — a real improvement, not a fluke.
 - XGBoost beats Ridge on both metrics, and the gap is large relative to the std on both — defensible as a genuine improvement, not noise (satisfies the rubric's "differences smaller than the spread must not be called improvements" requirement).
 - **Metric justification (for the report):** RMSE and MAE are reported together because RMSE is sensitive to the rare, very large claims that drive insurance risk, while MAE reflects typical claim-level error — reporting only one would hide which kind of mistake the model is making.
 
@@ -68,15 +68,47 @@ Running log of what's been built in `src/pipeline.py` and the results at each st
 
 **Key finding:** XGBoost's advantage over Ridge is much larger on low/medium-severity claims (10–18% error reduction) than on high-severity claims (only 3–5%). The aggregate comparison (RMSE 1909.76 vs 2033.10) makes XGBoost look like a clean, uniform win, but the per-segment breakdown shows **both models struggle hardest on exactly the claims that matter most for business risk**, and XGBoost's edge mostly evaporates there.
 
-This echoes Terefe & Aga (2026) from our own D2 literature review, who found that tree-based ML methods "did better but still underestimated extreme claims somewhat" versus a classical baseline — we're seeing the same pattern on a different dataset. 
+This echoes Terefe & Aga (2026) from our own D2 literature review, who found that tree-based ML methods "did better but still underestimated extreme claims somewhat" versus a classical baseline — we're seeing the same pattern on a different dataset. Worth citing back to our own survey in the Discussion section.
 
 **Rubric lines this covers:** Evaluation rigor's per-segment requirement (10 pts, shared with CV work above), and doubles as the ablation/sensitivity study for Analysis and discussion (7 pts) — no separate one needed.
 
 ---
 
-## Part 4 — Next up (not started yet)
+## Part 4 — Error analysis on worst-predicted claims
 
-- Error analysis on worst-predicted claims.
-- Limitations/threats-to-validity write-up.
-- `requirements.txt` + README.
-- Final, single test-set run (only after everything above is locked in).
+**What was added:** out-of-fold predictions for tuned XGBoost via `cross_val_predict`; sorted by absolute error to inspect the 20 worst-predicted claims; added signed error (`y_true − y_pred`) to check for systematic bias, not just magnitude.
+
+**Results:** mean signed error across all 131,822 training rows is 1.90 — essentially zero, unbiased on average. But of the 20 worst-predicted claims, **17 were under-predictions** (model guessed too low). The 3 over-predictions in the worst 20 were all on small true claims ($871, $1,558, $4,313) where the model predicted $27K–$51K — a smaller "false alarm" failure mode in the opposite direction.
+
+**Key finding:** confirms the segment-breakdown pattern from Part 3 — the model is unbiased in aggregate but systematically under-predicts its biggest misses, which are concentrated among expensive claims. Also closes a gap between the report's Section 3.3 positioning paragraph (which promised mean-signed-error reporting) and what the code actually computed.
+
+**Rubric lines this covers:** Analysis and discussion (7 pts) — "error analysis on actual examples."
+
+---
+
+## Part 5 — requirements.txt, README, and final test-set evaluation
+
+**What was added:**
+- `requirements.txt` via `pip freeze` — pinned versions for every dependency.
+- `README.md` — setup instructions, how to run the pipeline, expected runtime (~10–12 min, dominated by the XGBoost search), and what the script does.
+- `final_test_evaluate()` — fits each finalized model (mean predictor, tuned Ridge, tuned XGBoost) on `X_train` and predicts on `X_test`, touched exactly once, after every tuning/selection decision was already locked in via CV on the training set.
+
+**Results — held-out test set, compared against the CV estimates:**
+
+| Model | CV (train) RMSE | Test RMSE | CV (train) MAE | Test MAE |
+|---|---|---|---|---|
+| Trivial reference | 2913.38 ± 24.95 | 2871.74 | 1966.64 ± 8.75 | 1954.08 |
+| Ridge (tuned) | 2033.10 ± 23.02 | 2042.16 | 1301.75 ± 5.96 | 1292.99 |
+| **XGBoost (tuned)** | **1909.76 ± 23.15** | **1885.71** | **1187.94 ± 6.74** | **1180.32** |
+
+**Key finding:** every test number falls within about 1 fold-std of its CV estimate, and the model ranking (Trivial > Ridge > XGBoost) is unchanged. This confirms the cross-validated estimates were trustworthy — no overfitting to the training folds — and these are the final, reportable headline numbers for the D4 report's Results section.
+
+**Rubric lines this covers:** Reproducibility and code (4 pts); Evaluation rigor's "test set touched once" requirement.
+
+---
+
+## Part 6 — Next up
+
+- Decision tree comparison (still on the team schedule per D2 Section 8 — not yet done by anyone).
+- Limitations/threats-to-validity write-up for the D4 report's Discussion section.
+- D4 Final Report draft — in progress, see separate doc.

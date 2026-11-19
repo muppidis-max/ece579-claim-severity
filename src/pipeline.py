@@ -6,6 +6,7 @@ from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import cross_val_predict
 import pandas as pd
 import time
+script_start = time.time()
 
 df = pd.read_csv("data/train.csv")
 X = df.drop(columns=["id", "loss"])
@@ -166,3 +167,44 @@ def segment_evaluate(name, model, n_splits=5):
 print("\n--- Per-segment (claim-size bucket) results ---")
 segment_evaluate("Baseline: Ridge regression", Ridge(alpha=1.0, random_state=RANDOM_SEED))
 segment_evaluate("Tuned XGBoost", tuned_xgb)
+
+#step 12
+print("\n--- Error analysis: worst-predicted claims (Tuned XGBoost) ---")
+tuned_xgb_preds = cross_val_predict(
+    Pipeline([("prep", preprocessor), ("model", tuned_xgb)]),
+    X_train, y_train,
+    cv=KFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED),
+    n_jobs=-1,
+)
+
+errors = pd.DataFrame({
+    "y_true": y_train.values,
+    "y_pred": tuned_xgb_preds,
+})
+errors["signed_error"] = errors["y_true"] - errors["y_pred"]
+errors["abs_error"] = errors["signed_error"].abs()
+
+worst = errors.sort_values("abs_error", ascending=False).head(20)
+print(worst[["y_true", "y_pred", "signed_error"]].to_string())
+
+print(f"\nMean signed error, all {len(errors)} rows: {errors['signed_error'].mean():.2f}")
+print(f"Of the 20 worst-predicted claims, {(worst['signed_error'] > 0).sum()} were under-predictions "
+      f"(model guessed too low) vs. {(worst['signed_error'] < 0).sum()} over-predictions.")
+
+#step 15
+print("\n--- FINAL TEST-SET EVALUATION (touched once, at the very end) ---")
+
+def final_test_evaluate(name, model):
+    pipe = Pipeline([("prep", preprocessor), ("model", model)])
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+    mae = mean_absolute_error(y_test, preds)
+    print(f"{name:35s} RMSE: {rmse:10.2f}   MAE: {mae:10.2f}")
+    return rmse, mae
+
+final_test_evaluate("Trivial reference (mean predictor)", DummyRegressor(strategy="mean"))
+final_test_evaluate("Baseline: Ridge regression (tuned)", Ridge(alpha=1.0, random_state=RANDOM_SEED))
+final_test_evaluate("Proposed: Gradient Boosting (tuned XGBoost)", tuned_xgb)
+
+print(f"\nTotal script runtime: {(time.time() - script_start)/60:.1f} minutes")
