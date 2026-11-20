@@ -4,6 +4,7 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import cross_val_predict
+from sklearn.tree import DecisionTreeRegressor
 import pandas as pd
 import time
 script_start = time.time()
@@ -148,6 +149,29 @@ tuned_xgb = xgb.XGBRegressor(
 )
 cv_evaluate("Tuned XGBoost", tuned_xgb)
 
+#step 17
+print("\n--- Hyperparameter search: Decision Tree ---")
+tree_pipe = Pipeline([("prep", preprocessor), ("model", DecisionTreeRegressor(random_state=RANDOM_SEED))])
+tree_param_grid = {"model__max_depth": [5, 10, 15]}
+
+tree_search = GridSearchCV(
+    tree_pipe, tree_param_grid,
+    scoring="neg_root_mean_squared_error",
+    cv=KFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED),
+    n_jobs=-1,
+)
+tree_search.fit(X_train, y_train)
+
+print(f"Best max_depth: {tree_search.best_params_['model__max_depth']}")
+print(f"Best CV RMSE: {-tree_search.best_score_:.2f}")
+
+#step 18
+tuned_tree = DecisionTreeRegressor(
+    max_depth=tree_search.best_params_["model__max_depth"],
+    random_state=RANDOM_SEED,
+)
+cv_evaluate("Tuned Decision Tree", tuned_tree)
+
 #step 11
 def segment_evaluate(name, model, n_splits=5):
     pipe = Pipeline([("prep", preprocessor), ("model", model)])
@@ -167,6 +191,7 @@ def segment_evaluate(name, model, n_splits=5):
 print("\n--- Per-segment (claim-size bucket) results ---")
 segment_evaluate("Baseline: Ridge regression", Ridge(alpha=1.0, random_state=RANDOM_SEED))
 segment_evaluate("Tuned XGBoost", tuned_xgb)
+segment_evaluate("Tuned Decision Tree", tuned_tree)
 
 #step 12
 print("\n--- Error analysis: worst-predicted claims (Tuned XGBoost) ---")
@@ -206,5 +231,7 @@ def final_test_evaluate(name, model):
 final_test_evaluate("Trivial reference (mean predictor)", DummyRegressor(strategy="mean"))
 final_test_evaluate("Baseline: Ridge regression (tuned)", Ridge(alpha=1.0, random_state=RANDOM_SEED))
 final_test_evaluate("Proposed: Gradient Boosting (tuned XGBoost)", tuned_xgb)
+final_test_evaluate("Tuned Decision Tree", tuned_tree)
 
 print(f"\nTotal script runtime: {(time.time() - script_start)/60:.1f} minutes")
+
